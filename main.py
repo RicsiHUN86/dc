@@ -5,10 +5,9 @@ import os
 import time
 import random
 import json
+import mysql.connector
 from datetime import datetime
 from dotenv import load_dotenv
-from flask import Flask
-from threading import Thread
 
 load_dotenv()
 
@@ -17,23 +16,11 @@ intents.message_content = True
 intents.members = True
 intents.guilds = True
 
+
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 invites = {}
 recently_joined = {}
-
-app = Flask('')
-
-@app.route('/')
-def home():
-    return "Bot fut! ✅"
-
-def run():
-    app.run(host='0.0.0.0', port=8080)
-
-def keep_alive():
-    t = Thread(target=run)
-    t.start()
 
 def save_invites(guild_invites):
     data = {}
@@ -60,32 +47,38 @@ def load_invites():
         return {}
 
 def get_db_connection():
-    host = os.getenv("MYSQLHOST")
-    user = os.getenv("MYSQLUSER")
-    password = os.getenv("MYSQLPASSWORD")
-    database = os.getenv("MYSQLDATABASE")
+    try:
+        conn = mysql.connector.connect(
+            host=os.getenv("MYSQLHOST"),
+            user=os.getenv("MYSQLUSER"),
+            password=os.getenv("MYSQLPASSWORD"),
+            database=os.getenv("MYSQLDATABASE")
+        )
+        return conn
+    except mysql.connector.Error as err:
+        print(f"❌ Adatbázis kapcsolat hiba: {err}")
+        return None
 
-    # Debug print, hogy lásd miket olvas be a környezetből
-    print(f"DB connect info: host={host}, user={user}, db={database}")
 
-    conn = mysql.connector.connect(
-        host=host,
-        user=user,
-        password=password,
-        database=database  # Ez a legfontosabb, hogy ne hagyd ki!
-    )
-    return conn
-print("B connect info: host={}, user={}, db={}".format(
-    os.getenv("MYSQLHOST"),
-    os.getenv("MYSQLUSER"),
-    os.getenv("MYSQLDATABASE")
-))
+conn = mysql.connector.connect(
+    host="localhost",
+    user="root",
+    password="",
+    database="dcbot"
+)
+print("Sikeres kapcsolat!")
 
-CHANNEL_ID = 1373567323826294815  # Születésnapos üzenetcsatorna
-LOG_CHANNEL_ID = 1370017358646608005  # Log csatorna
+
+CHANNEL_ID = 1373567323826294815
+LOG_CHANNEL_ID = 1370017358646608005
 
 @bot.command(name="születésnap")
 async def szuletesnap(ctx, *args):
+    try:
+        await ctx.message.delete()
+    except:
+        pass  
+
     if args and args[0].lower() == "törlés":
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -93,7 +86,13 @@ async def szuletesnap(ctx, *args):
         conn.commit()
         conn.close()
 
-        await ctx.send("❌ A születésnapod törölve lett.")
+        msg = await ctx.send("❌ A születésnapod törölve lett.")
+        await asyncio.sleep(10)
+        try:
+            await msg.delete()
+        except:
+            pass
+
         log_channel = bot.get_channel(LOG_CHANNEL_ID)
         if log_channel:
             await log_channel.send(f"🗑️ **Születésnap törölve:** {ctx.author.mention}")
@@ -102,25 +101,37 @@ async def szuletesnap(ctx, *args):
     def check(msg):
         return msg.author == ctx.author and msg.channel == ctx.channel
 
-    await ctx.send("📅 Kérlek, add meg a születésnapod **hónapját** (1-12):")
+    question_msg = await ctx.send("📅 Kérlek, add meg a születésnapod **hónapját** (1-12):")
     try:
         month_msg = await bot.wait_for("message", timeout=30.0, check=check)
+        await question_msg.delete()
         await month_msg.delete()
-        month = int(month_msg.content)
+        month_content = month_msg.content.strip()
+        if not month_content.isdigit():
+            raise ValueError()
+        month = int(month_content)
         if not 1 <= month <= 12:
             raise ValueError()
     except Exception:
         return await ctx.send("❌ Hibás hónap! Próbáld újra a `!születésnap` paranccsal.")
 
-    await ctx.send("📅 Most add meg a **napot** (1-31):")
+
+
+    question_msg = await ctx.send("📅 Most add meg a **napot** (1-31):")
     try:
         day_msg = await bot.wait_for("message", timeout=30.0, check=check)
+        await question_msg.delete()
         await day_msg.delete()
-        day = int(day_msg.content)
+        day_content = day_msg.content.strip()
+        if not day_content.isdigit():
+            raise ValueError()
+        day = int(day_content)
         if not 1 <= day <= 31:
             raise ValueError()
     except Exception:
         return await ctx.send("❌ Hibás nap! Próbáld újra a `!születésnap` paranccsal.")
+
+
 
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -128,7 +139,13 @@ async def szuletesnap(ctx, *args):
     conn.commit()
     conn.close()
 
-    await ctx.send("✅ A születésnapod el lett mentve!")
+    msg = await ctx.send("✅ A születésnapod el lett mentve!")
+    await asyncio.sleep(10)
+    try:
+        await msg.delete()
+    except:
+        pass
+
     log_channel = bot.get_channel(LOG_CHANNEL_ID)
     if log_channel:
         await log_channel.send(f"📌 **Születésnap hozzáadva:** {ctx.author.mention} ({month:02}.{day:02})")
@@ -240,9 +257,10 @@ async def on_raw_reaction_add(payload):
     log_channel = bot.get_channel(LOG_CHANNEL_ID)
     if log_channel:
         await log_channel.send(f"**Whitelist Hozzáadva:** {member.mention}")
+
 tracked_tickets = {}
 
-TICKET_LOG_CHANNEL_ID = 1376127480460480573  # Új log csatorna ticketekhez
+TICKET_LOG_CHANNEL_ID = 1376127480460480573
 
 @bot.event
 async def on_guild_channel_delete(channel):
@@ -252,7 +270,6 @@ async def on_guild_channel_delete(channel):
             print("❌ Ticket log csatorna nem található.")
             return
 
-        # Küldünk egy alap log üzenetet
         await log_channel.send(f"📁 **Ticket lezárva/törölve:** `{channel.name}`")
 
         try:
@@ -267,7 +284,6 @@ async def on_guild_channel_delete(channel):
                 content = msg.content or "[csatolmány vagy beágyazás]"
                 log_lines.append(f"[{timestamp}] {msg.author}: {content}")
 
-            # Discord üzenet korlát miatt chunkoljuk
             chunk = ""
             for line in log_lines:
                 if len(chunk) + len(line) > 1900:
@@ -280,9 +296,5 @@ async def on_guild_channel_delete(channel):
 
         except Exception as e:
             await log_channel.send(f"❌ Hiba a ticket mentése közben: {e}")
-
-
-
-keep_alive()
 
 bot.run(os.getenv("TOKEN"))
